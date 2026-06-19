@@ -15,8 +15,7 @@ const int  dstOffset = 3600;
 #define NUM_LEDS   64
 #define BRIGHTNESS 10
 
-CRGB fgColor  = CRGB(0, 0, 40);  // dark blue — Cistercian strokes
-CRGB dotColor = CRGB(0, 25, 0);  // dark green — border dot
+CRGB fgColor = CRGB(0, 0, 40);   // dark blue — Cistercian strokes
 
 CRGB leds[NUM_LEDS];
 
@@ -156,17 +155,89 @@ void drawThousands(int d) {
     }
 }
 
-// ── Border dot ────────────────────────────────────────────────────────────────
+// ── Border animation ──────────────────────────────────────────────────────────
 //
-//  The dot travels the 15-pixel L-border (row 0 + col 0):
-//    pos  0-7:  row 0, cols 0→7  (top edge, left to right)
-//    pos  8-14: col 0, rows 1→7  (left edge, top to bottom)
+//  15-pixel L-border: pos 0-7 = row 0 cols 0-7, pos 8-14 = col 0 rows 1-7.
+//  Five schemes rotate randomly every SCHEME_SECS seconds, 1 step/second.
+//
+//  At BRIGHTNESS=10, FastLED scales values by 10/255 (~4%).
+//  Use large raw values so the dim output is still visibly gradated:
+//    255→~10, 150→~6, 80→~3, 30→~1
 
-void drawDot(int pos) {
-    int row, col;
-    if (pos < 8) { row = 0; col = pos; }
-    else         { row = pos - 7; col = 0; }
-    leds[ledIndex(row, col)] = dotColor;
+#define BORDER_LEN  15
+#define DOT_MS      1000    // advance one step per second
+#define SCHEME_SECS 15      // seconds per scheme
+#define NUM_SCHEMES 5
+
+static uint8_t borderPixels[BORDER_LEN];
+
+void borderSetPos(int pos, uint8_t g) {
+    int p = ((pos % BORDER_LEN) + BORDER_LEN) % BORDER_LEN;
+    if (borderPixels[p] < g) borderPixels[p] = g;  // brightest wins on overlap
+}
+
+void advanceBorder(int scheme, int step) {
+    memset(borderPixels, 0, sizeof(borderPixels));
+    switch (scheme) {
+
+        case 0: {  // Comet: looping with 3-pixel fading tail
+            static const uint8_t f[] = {255, 150, 70, 30};
+            for (int i = 0; i < 4; i++)
+                borderSetPos(step - i, f[i]);
+            break;
+        }
+
+        case 1: {  // Ping-pong: dot bounces end-to-end with tail
+            int cycle = (BORDER_LEN - 1) * 2;  // 28
+            int s = step % cycle;
+            int pos = s < BORDER_LEN ? s : cycle - s;
+            int dir = s < BORDER_LEN ? 1 : -1;
+            static const uint8_t f[] = {255, 130, 50};
+            for (int i = 0; i < 3; i++)
+                borderSetPos(pos - dir * i, f[i]);
+            break;
+        }
+
+        case 2: {  // Double: two comets chasing, offset by half the border
+            static const uint8_t f[] = {255, 120, 45};
+            for (int j = 0; j < 2; j++) {
+                int head = step + j * 7;
+                for (int i = 0; i < 3; i++)
+                    borderSetPos(head - i, f[i]);
+            }
+            break;
+        }
+
+        case 3: {  // Fill-drain: pixels accumulate then shrink
+            int s = step % (BORDER_LEN * 2);
+            if (s < BORDER_LEN) {
+                for (int i = 0; i <= s; i++)
+                    borderPixels[i] = (i == s) ? 255 : 150;
+            } else {
+                int n = BORDER_LEN * 2 - s;
+                for (int i = 0; i < n; i++)
+                    borderPixels[i] = 150;
+            }
+            break;
+        }
+
+        case 4: {  // Wipe: dark notch sweeps across fully-lit border
+            for (int i = 0; i < BORDER_LEN; i++) borderPixels[i] = 150;
+            int notch = step % BORDER_LEN;
+            borderPixels[notch] = 0;
+            if (notch > 0)              borderPixels[notch - 1] = 40;
+            if (notch < BORDER_LEN - 1) borderPixels[notch + 1] = 40;
+            break;
+        }
+    }
+}
+
+void drawBorder() {
+    for (int i = 0; i < BORDER_LEN; i++) {
+        int row = (i < 8) ? 0 : i - 7;
+        int col = (i < 8) ? i : 0;
+        leds[ledIndex(row, col)] = CRGB(0, borderPixels[i], 0);
+    }
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────
@@ -223,32 +294,45 @@ void setup() {
     FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUM_LEDS);
     FastLED.setBrightness(BRIGHTNESS);
     FastLED.clear();
+    advanceBorder(0, 0);
     FastLED.show();
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 
-#define DOT_INTERVAL_MS 200   // dot moves every 200ms
-
 void loop() {
-    static unsigned long lastDotMs = 0;
-    static int dotPos = 0;
+    static unsigned long lastStepMs   = 0;
+    static unsigned long schemeStartMs = 0;
+    static int step   = 0;
+    static int scheme = 0;
 
     unsigned long now_ms = millis();
 
-    // Advance dot
-    if (now_ms - lastDotMs >= DOT_INTERVAL_MS) {
-        lastDotMs = now_ms;
-        dotPos = (dotPos + 1) % 15;
+    // Switch scheme randomly every SCHEME_SECS, no immediate repeat
+    if (now_ms - schemeStartMs >= (unsigned long)SCHEME_SECS * 1000) {
+        int next;
+        do { next = random(0, NUM_SCHEMES); } while (next == scheme);
+        scheme = next;
+        schemeStartMs = now_ms;
+        step = 0;
+        advanceBorder(scheme, step);
+        Serial.printf("Border scheme -> %d\n", scheme);
     }
 
-    // Redraw everything each frame so the dot doesn't accumulate
+    // Advance animation one step per second
+    if (now_ms - lastStepMs >= DOT_MS) {
+        lastStepMs = now_ms;
+        step++;
+        advanceBorder(scheme, step);
+    }
+
+    // Redraw full frame
     time_t now = time(nullptr);
     struct tm* t = localtime(&now);
 
     FastLED.clear();
     drawGlyph(t->tm_hour, t->tm_min);
-    drawDot(dotPos);
+    drawBorder();
     FastLED.show();
 
     delay(20);
