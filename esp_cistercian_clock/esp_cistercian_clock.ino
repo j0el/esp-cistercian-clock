@@ -12,30 +12,16 @@ const int   dstOffset = 3600;
 #define LED_PIN    2
 #define NUM_LEDS   64
 #define BRIGHTNESS 10
-#define BUTTON_PIN 0   // GPIO0 — the FLASH button; toggles clock ↔ life
+#define BUTTON_PIN 0   // GPIO0 — the FLASH button
 
 CRGB leds[NUM_LEDS];
-int  mode = 0;  // 0 = Cistercian clock, 1 = Conway's Game of Life
+int  mode = 0;  // 0 = Cistercian clock, 1 = Game of Life, 2 = Snake
 
 int ledIndex(int row, int col) { return row * 8 + col; }
 
 // ════════════════════════════════════════════════════════════════════════════════
 //  MODE 0: CISTERCIAN CLOCK
 // ════════════════════════════════════════════════════════════════════════════════
-//
-//  Glyph occupies rows 1-7, cols 1-7 (7×7 area).
-//  L-border (row 0 + col 0) runs a rotating animated scheme.
-//
-//  col:  0   1  2  3 | 4 | 5  6  7
-//        ────────────────────────────
-//  row 0  ← border animation ──────→
-//  row 1  .  TENS  |stave| UNITS  .
-//  row 2  .        |     |        .
-//  row 3  .        |     |        .
-//  row 4  .  THOU. |     | HUND.  .
-//  row 5  .        |     |        .
-//  row 6  .        |     |        .
-//  row 7  .        |     |        .
 
 CRGB fgColor = CRGB(0, 0, 40);
 
@@ -108,13 +94,6 @@ void drawThousands(int d) {
 }
 
 // ── Border animation ──────────────────────────────────────────────────────────
-//
-//  15-pixel L-border: pos 0-7 = row 0 cols 0-7, pos 8-14 = col 0 rows 1-7.
-//  Five schemes rotate randomly every SCHEME_SECS seconds, 1 step/second.
-//
-//  At BRIGHTNESS=10, FastLED scales values by ~4%.
-//  Use large raw values so the dim output is visibly gradated:
-//    255→~10, 150→~6, 80→~3, 30→~1
 
 #define BORDER_LEN  15
 #define DOT_MS      1000
@@ -131,12 +110,12 @@ void borderSetPos(int pos, uint8_t g) {
 void advanceBorder(int scheme, int step) {
     memset(borderPixels, 0, sizeof(borderPixels));
     switch (scheme) {
-        case 0: {  // Comet: looping with 3-pixel fading tail
+        case 0: {
             static const uint8_t f[] = {255, 150, 70, 30};
             for (int i = 0; i < 4; i++) borderSetPos(step - i, f[i]);
             break;
         }
-        case 1: {  // Ping-pong: dot bounces end-to-end with tail
+        case 1: {
             int cycle = (BORDER_LEN - 1) * 2;
             int s = step % cycle;
             int pos = s < BORDER_LEN ? s : cycle - s;
@@ -145,7 +124,7 @@ void advanceBorder(int scheme, int step) {
             for (int i = 0; i < 3; i++) borderSetPos(pos - dir * i, f[i]);
             break;
         }
-        case 2: {  // Double: two comets chasing, offset by half the border
+        case 2: {
             static const uint8_t f[] = {255, 120, 45};
             for (int j = 0; j < 2; j++) {
                 int head = step + j * 7;
@@ -153,7 +132,7 @@ void advanceBorder(int scheme, int step) {
             }
             break;
         }
-        case 3: {  // Fill-drain: pixels accumulate then shrink
+        case 3: {
             int s = step % (BORDER_LEN * 2);
             if (s < BORDER_LEN) {
                 for (int i = 0; i <= s; i++) borderPixels[i] = (i == s) ? 255 : 150;
@@ -163,7 +142,7 @@ void advanceBorder(int scheme, int step) {
             }
             break;
         }
-        case 4: {  // Wipe: dark notch sweeps across fully-lit border
+        case 4: {
             for (int i = 0; i < BORDER_LEN; i++) borderPixels[i] = 150;
             int notch = step % BORDER_LEN;
             borderPixels[notch] = 0;
@@ -207,9 +186,7 @@ void runClock() {
     static unsigned long schemeStartMs = 0;
     static int step   = 0;
     static int scheme = 0;
-
     unsigned long now_ms = millis();
-
     if (now_ms - schemeStartMs >= (unsigned long)SCHEME_SECS * 1000) {
         int next;
         do { next = random(0, NUM_SCHEMES); } while (next == scheme);
@@ -224,7 +201,6 @@ void runClock() {
         step++;
         advanceBorder(scheme, step);
     }
-
     time_t now = time(nullptr);
     struct tm* t = localtime(&now);
     FastLED.clear();
@@ -237,14 +213,6 @@ void runClock() {
 // ════════════════════════════════════════════════════════════════════════════════
 //  MODE 1: CONWAY'S GAME OF LIFE
 // ════════════════════════════════════════════════════════════════════════════════
-//
-//  8×8 toroidal grid. Three-color display shows current state + next gen:
-//    Blue  = alive, will survive
-//    Green = dead,  will be born
-//    Red   = alive, will die
-//
-//  Resets when: all cells die, next state matches recent history (oscillation),
-//  or MAX_GENS exceeded.
 
 #define GOL_GEN_MS   1000
 #define GOL_HIST_LEN 16
@@ -318,7 +286,6 @@ void resetGoL() {
 void runGoL() {
     if (millis() - golLastGenMs < GOL_GEN_MS) { delay(10); return; }
     golLastGenMs = millis();
-
     FastLED.clear();
     for (int r = 0; r < 8; r++)
         for (int c = 0; c < 8; c++) {
@@ -329,7 +296,6 @@ void runGoL() {
             leds[r * 8 + c] = col;
         }
     FastLED.show();
-
     uint64_t nxtMask = golMask(golNxt);
     if (golIsStuck(nxtMask) || golGenCount >= GOL_MAX_GENS) {
         delay(800);
@@ -344,26 +310,183 @@ void runGoL() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+//  MODE 2: SNAKE
+// ════════════════════════════════════════════════════════════════════════════════
+//
+//  One-button control: short press = turn right (clockwise).
+//  Long press (>= 1500ms) always advances to the next mode.
+//  Snake wraps around edges. Eating food grows the snake by 1.
+//  On collision with own body: flash red, restart.
+//  On filling the grid: flash green, restart.
+//
+//  Direction encoding: 0=RIGHT, 1=DOWN, 2=LEFT, 3=UP
+
+#define SNAKE_MAX_LEN 64
+#define SNAKE_STEP_MS 600
+
+static const int8_t SNK_DR[] = { 0,  1,  0, -1};
+static const int8_t SNK_DC[] = { 1,  0, -1,  0};
+
+int8_t  snkRow[SNAKE_MAX_LEN];
+int8_t  snkCol[SNAKE_MAX_LEN];
+int     snkLen     = 0;
+int     snkDir     = 0;   // current direction
+int     snkNextDir = 0;   // queued turn (applied at next step)
+int8_t  snkFoodR   = 0;
+int8_t  snkFoodC   = 0;
+int     snkScore   = 0;
+unsigned long snkLastStepMs = 0;
+
+bool snkOnBody(int r, int c, int checkLen) {
+    for (int i = 0; i < checkLen; i++)
+        if (snkRow[i] == r && snkCol[i] == c) return true;
+    return false;
+}
+
+void snkPlaceFood() {
+    if (snkLen >= SNAKE_MAX_LEN) return;
+    do {
+        snkFoodR = random(8);
+        snkFoodC = random(8);
+    } while (snkOnBody(snkFoodR, snkFoodC, snkLen));
+}
+
+void resetSnake() {
+    snkLen     = 3;
+    snkRow[0]  = 3; snkCol[0] = 5;   // head
+    snkRow[1]  = 3; snkCol[1] = 4;
+    snkRow[2]  = 3; snkCol[2] = 3;   // tail
+    snkDir     = 0;   // RIGHT
+    snkNextDir = 0;
+    snkScore   = 0;
+    snkLastStepMs = 0;
+    randomSeed(analogRead(0));
+    snkPlaceFood();
+}
+
+void snkDisplay() {
+    FastLED.clear();
+    leds[snkFoodR * 8 + snkFoodC] = CRGB(200, 0, 0);
+    for (int i = snkLen - 1; i >= 0; i--) {
+        uint8_t g = (i == 0) ? 255
+                  : (snkLen > 1) ? map(i, 1, snkLen - 1, 180, 40) : 180;
+        leds[snkRow[i] * 8 + snkCol[i]] = CRGB(0, g, 0);
+    }
+    FastLED.show();
+}
+
+void snkFlash(CRGB col, int times, int onMs, int offMs) {
+    for (int f = 0; f < times; f++) {
+        fill_solid(leds, NUM_LEDS, col);
+        FastLED.show(); delay(onMs);
+        FastLED.clear();
+        FastLED.show(); delay(offMs);
+    }
+}
+
+void runSnake() {
+    if (millis() - snkLastStepMs < SNAKE_STEP_MS) { delay(10); return; }
+    snkLastStepMs = millis();
+
+    // Apply queued direction — disallow 180° reversal
+    if (snkNextDir != (snkDir + 2) % 4) snkDir = snkNextDir;
+
+    int nr = (snkRow[0] + SNK_DR[snkDir] + 8) % 8;
+    int nc = (snkCol[0] + SNK_DC[snkDir] + 8) % 8;
+
+    // Death: hit own body (tail excluded — it moves away this step)
+    if (snkOnBody(nr, nc, snkLen - 1)) {
+        Serial.printf("Snake died! Score: %d\n", snkScore);
+        snkFlash(CRGB(150, 0, 0), 3, 200, 150);
+        resetSnake();
+        return;
+    }
+
+    bool ate = (nr == snkFoodR && nc == snkFoodC);
+    if (ate && snkLen < SNAKE_MAX_LEN) snkLen++;   // grow before shift
+
+    // Shift body toward tail, insert new head
+    for (int i = snkLen - 1; i > 0; i--) {
+        snkRow[i] = snkRow[i - 1];
+        snkCol[i] = snkCol[i - 1];
+    }
+    snkRow[0] = nr;
+    snkCol[0] = nc;
+
+    if (ate) {
+        snkScore++;
+        Serial.printf("Score: %d\n", snkScore);
+        if (snkLen >= SNAKE_MAX_LEN) {
+            Serial.println("Snake wins!");
+            snkFlash(CRGB(0, 150, 0), 5, 300, 200);
+            resetSnake();
+            return;
+        }
+        snkPlaceFood();
+    }
+
+    snkDisplay();
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 //  BUTTON + SETUP + LOOP
 // ════════════════════════════════════════════════════════════════════════════════
+//
+//  Short press (< 1500ms):
+//    Snake mode → turn right (clockwise)
+//    Other modes → advance to next mode
+//
+//  Long press (>= 1500ms held then released):
+//    Any mode → advance to next mode
+
+void switchMode() {
+    mode = (mode + 1) % 3;
+    Serial.printf("Mode -> %d (%s)\n", mode,
+        mode == 0 ? "Clock" : mode == 1 ? "Life" : "Snake");
+    if (mode == 1) resetGoL();
+    if (mode == 2) resetSnake();
+    FastLED.clear();
+    FastLED.show();
+}
 
 void checkButton() {
-    static unsigned long lastPressMs = 0;
-    if (digitalRead(BUTTON_PIN) == LOW && millis() - lastPressMs > 300) {
-        lastPressMs = millis();
-        mode = 1 - mode;
-        Serial.printf("Mode -> %s\n", mode ? "Game of Life" : "Clock");
-        if (mode == 1) resetGoL();
-        FastLED.clear();
-        FastLED.show();
+    static unsigned long pressedAt  = 0;
+    static bool wasDown             = false;
+    static bool actionTaken         = false;
+
+    bool down = (digitalRead(BUTTON_PIN) == LOW);
+
+    if (down && !wasDown) {
+        pressedAt   = millis();
+        wasDown     = true;
+        actionTaken = false;
+    }
+
+    // Trigger long press while still held
+    if (down && !actionTaken && millis() - pressedAt >= 1500) {
+        actionTaken = true;
+        switchMode();
+    }
+
+    if (!down && wasDown) {
+        unsigned long held = millis() - pressedAt;
+        wasDown = false;
+        if (!actionTaken && held >= 50) {
+            if (mode == 2) {
+                snkNextDir = (snkDir + 1) % 4;   // turn right
+            } else {
+                switchMode();
+            }
+        }
     }
 }
 
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println("\n=== Cistercian Clock + Game of Life ===");
-    Serial.println("Press FLASH button to switch modes");
+    Serial.println("\n=== Cistercian Clock + Life + Snake ===");
+    Serial.println("Short press: next mode (or turn snake)");
+    Serial.println("Long press:  always next mode");
 
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
@@ -396,6 +519,7 @@ void setup() {
 
 void loop() {
     checkButton();
-    if (mode == 0) runClock();
-    else           runGoL();
+    if      (mode == 0) runClock();
+    else if (mode == 1) runGoL();
+    else                runSnake();
 }
