@@ -211,25 +211,33 @@ void runClock() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-//  MODE 1: CONWAY'S GAME OF LIFE
+//  MODE 1: CONWAY'S GAME OF LIFE  — preset patterns
 // ════════════════════════════════════════════════════════════════════════════════
+//
+//  Patterns rotate randomly every GOL_SWITCH_MS (20 seconds) across four
+//  categories.  Grid is 8×8 toroidal so any placement wraps correctly.
+//
+//  Spaceships  → 4 glider orientations
+//  Oscillators → Blinker (p2), Toad (p2), Beacon (p2)
+//  Guns        → R-pentomino, Acorn, Die Hard  (Gosper Gun is 36×9; too big)
+//  Breeders    → 3 randomly-placed gliders     (true breeders also too big)
+//
+//  Three-color display: blue=survive  green=born  red=dying
 
-#define GOL_GEN_MS   1000
-#define GOL_HIST_LEN 16
-#define GOL_MAX_GENS 500
-#define GOL_FILL_PCT 35
+#define GOL_GEN_MS    1000    // ms per generation
+#define GOL_SWITCH_MS 20000   // ms before switching to a new pattern
 
 bool golCur[8][8];
 bool golNxt[8][8];
-uint64_t golHistory[GOL_HIST_LEN];
-int golHistIdx   = 0;
-int golHistCount = 0;
-int golGenCount  = 0;
-unsigned long golLastGenMs = 0;
+unsigned long golLastGenMs      = 0;
+unsigned long golPatternStartMs = 0;
+int golGenCount = 0;
 
 const CRGB GOL_SURVIVE = CRGB(  0,   0, 200);
 const CRGB GOL_BORN    = CRGB(  0, 200,   0);
 const CRGB GOL_DYING   = CRGB(200,   0,   0);
+
+// ─── GoL engine ──────────────────────────────────────────────────────────────
 
 int golCountN(int r, int c) {
     int n = 0;
@@ -256,36 +264,101 @@ uint64_t golMask(bool b[8][8]) {
     return m;
 }
 
-bool golIsStuck(uint64_t mask) {
-    if (mask == 0) return true;
-    int n = (golHistCount < GOL_HIST_LEN) ? golHistCount : GOL_HIST_LEN;
-    for (int i = 0; i < n; i++)
-        if (golHistory[i] == mask) return true;
-    return false;
+// ─── Pattern library ─────────────────────────────────────────────────────────
+// Each entry is a flat array of (row,col) pairs, relative to a placement anchor.
+
+// Spaceships — four glider orientations
+static const int8_t P_GL_SE[] = {0,1, 1,2, 2,0,2,1,2,2};       // .#. / ..# / ###
+static const int8_t P_GL_SW[] = {0,1, 1,0, 2,0,2,1,2,2};       // .#. / #.. / ###
+static const int8_t P_GL_NE[] = {0,0,0,1,0,2, 1,2, 2,1};       // ### / ..# / .#.
+static const int8_t P_GL_NW[] = {0,0,0,1,0,2, 1,0, 2,1};       // ### / #.. / .#.
+
+// Oscillators
+static const int8_t P_BLINKER[] = {0,0, 0,1, 0,2};              // ###  period 2
+static const int8_t P_TOAD[]    = {0,1,0,2,0,3, 1,0,1,1,1,2};  // .### / ###.  period 2
+static const int8_t P_BEACON[]  = {0,0,0,1, 1,0, 2,3, 3,2,3,3};// ##.. / #... / ...# / ..##  period 2
+
+// "Guns" — long-lived chaotic seeds (true guns don't fit on 8×8)
+// R-pentomino: 5 cells, active for 1103 gens on infinite grid
+static const int8_t P_RPENTO[]  = {0,1,0,2, 1,0,1,1, 2,1};
+// Acorn: 7 cells, ~5000 gens on infinite grid
+static const int8_t P_ACORN[]   = {0,1, 1,3, 2,0,2,1,2,4,2,5,2,6};
+// Die Hard: 7 cells, vanishes at gen 130 on infinite grid
+static const int8_t P_DIEHARD[] = {0,6, 1,0,1,1, 2,1,2,5,2,6,2,7};
+
+struct PatDef { const char* name; const int8_t* cells; uint8_t n; };
+
+static const PatDef SPACESHIPS[]  = {
+    {"Glider SE", P_GL_SE, 5}, {"Glider SW", P_GL_SW, 5},
+    {"Glider NE", P_GL_NE, 5}, {"Glider NW", P_GL_NW, 5},
+};
+static const PatDef OSCILLATORS[] = {
+    {"Blinker", P_BLINKER, 3}, {"Toad", P_TOAD, 6}, {"Beacon", P_BEACON, 6},
+};
+static const PatDef GUNS[] = {
+    {"R-pentomino", P_RPENTO, 5}, {"Acorn", P_ACORN, 7}, {"Die Hard", P_DIEHARD, 7},
+};
+
+// Stamp a pattern onto golCur at (baseR, baseC), wrapping toroidally
+void golPlace(const int8_t* cells, int n, int baseR, int baseC) {
+    for (int i = 0; i < n; i++) {
+        int r = (baseR + cells[i*2]   + 8) % 8;
+        int c = (baseC + cells[i*2+1] + 8) % 8;
+        golCur[r][c] = true;
+    }
 }
 
-void golPushHistory(uint64_t mask) {
-    golHistory[golHistIdx] = mask;
-    golHistIdx = (golHistIdx + 1) % GOL_HIST_LEN;
-    golHistCount++;
+// Pick and stamp a new starting pattern
+void golStartPattern() {
+    memset(golCur, 0, sizeof(golCur));
+    golGenCount = 0;
+    randomSeed(analogRead(0) ^ millis());
+
+    const int8_t* gliders[] = {P_GL_SE, P_GL_SW, P_GL_NE, P_GL_NW};
+
+    int cat = random(4);
+    int r = random(8), c = random(8);
+
+    switch (cat) {
+        case 0: {  // Spaceship
+            int p = random(4);
+            golPlace(SPACESHIPS[p].cells, SPACESHIPS[p].n, r, c);
+            Serial.printf("Life: Spaceship / %s at (%d,%d)\n", SPACESHIPS[p].name, r, c);
+            break;
+        }
+        case 1: {  // Oscillator
+            int p = random(3);
+            golPlace(OSCILLATORS[p].cells, OSCILLATORS[p].n, r, c);
+            Serial.printf("Life: Oscillator / %s at (%d,%d)\n", OSCILLATORS[p].name, r, c);
+            break;
+        }
+        case 2: {  // "Gun" — long-lived chaotic seed
+            int p = random(3);
+            golPlace(GUNS[p].cells, GUNS[p].n, r, c);
+            Serial.printf("Life: Gun / %s at (%d,%d)\n", GUNS[p].name, r, c);
+            break;
+        }
+        case 3: {  // "Breeder" — 3 gliders that interact on the torus
+            for (int g = 0; g < 3; g++)
+                golPlace(gliders[random(4)], 5, random(8), random(8));
+            Serial.println("Life: Breeder / 3-glider cluster");
+            break;
+        }
+    }
+
+    golComputeNext();
 }
 
 void resetGoL() {
-    memset(golHistory, 0, sizeof(golHistory));
-    golHistIdx   = 0;
-    golHistCount = 0;
-    golGenCount  = 0;
-    golLastGenMs = 0;
-    randomSeed(analogRead(0));
-    for (int r = 0; r < 8; r++)
-        for (int c = 0; c < 8; c++)
-            golCur[r][c] = random(100) < GOL_FILL_PCT;
-    golComputeNext();
+    golLastGenMs      = 0;
+    golPatternStartMs = millis();
+    golStartPattern();
 }
 
 void runGoL() {
     if (millis() - golLastGenMs < GOL_GEN_MS) { delay(10); return; }
     golLastGenMs = millis();
+
     FastLED.clear();
     for (int r = 0; r < 8; r++)
         for (int c = 0; c < 8; c++) {
@@ -296,17 +369,18 @@ void runGoL() {
             leds[r * 8 + c] = col;
         }
     FastLED.show();
-    uint64_t nxtMask = golMask(golNxt);
-    if (golIsStuck(nxtMask) || golGenCount >= GOL_MAX_GENS) {
-        delay(800);
-        Serial.printf("GoL reset after %d generations\n", golGenCount);
+
+    bool dead    = (golMask(golNxt) == 0);
+    bool timeout = (millis() - golPatternStartMs >= GOL_SWITCH_MS);
+    if (dead || timeout) {
+        if (dead) { delay(500); Serial.println("Life: extinction"); }
         resetGoL();
-    } else {
-        golPushHistory(golMask(golCur));
-        memcpy(golCur, golNxt, sizeof(golCur));
-        golGenCount++;
-        golComputeNext();
+        return;
     }
+
+    memcpy(golCur, golNxt, sizeof(golCur));
+    golGenCount++;
+    golComputeNext();
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
