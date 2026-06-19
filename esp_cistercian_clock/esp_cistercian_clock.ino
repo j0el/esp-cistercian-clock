@@ -15,7 +15,7 @@ const int   dstOffset = 3600;
 #define BUTTON_PIN 0   // GPIO0 — the FLASH button
 
 CRGB leds[NUM_LEDS];
-int  mode = 0;  // 0 = Cistercian clock, 1 = Game of Life, 2 = Snake
+int  mode = 0;  // 0=Clock  1=Life  2=Snake  3=Mandelbrot
 
 int ledIndex(int row, int col) { return row * 8 + col; }
 
@@ -503,6 +503,85 @@ void runSnake() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+//  MODE 3: MANDELBROT
+// ════════════════════════════════════════════════════════════════════════════════
+//
+//  Precomputed on 8×8.  Four views cycle every MAND_VIEW_MS seconds.
+//  Boundary pixels animate with a slowly rotating rainbow hue so the
+//  iteration-count contours flow with color.  Inside-set pixels stay black.
+//
+//  Note: ESP8266 has no FPU so floats are software-emulated, but 64 pixels
+//  × 48 iterations takes only a few milliseconds — recompute is imperceptible.
+
+#define MAND_MAX_ITER 48
+#define MAND_VIEW_MS  15000   // ms per view before cycling
+#define MAND_HUE_MS   60      // ms between color steps
+
+struct MandView { float reMin, reMax, imMin, imMax; const char* name; };
+
+static const MandView MAND_VIEWS[] = {
+    {-2.5f,  1.0f, -1.25f,  1.25f, "Full"},       // classic overview
+    {-2.2f, -0.4f, -1.0f,   1.0f,  "West"},        // main body + antenna
+    {-1.0f,  0.4f, -0.75f,  0.75f, "Cardioids"},   // cardioid + p2 bulb
+    {-0.72f, 0.28f,-0.55f,  0.55f, "Core"},         // cardioid close-up
+};
+#define MAND_NUM_VIEWS 4
+
+uint8_t mandIter[64];   // escape iteration count per pixel (MAND_MAX_ITER = inside set)
+
+void mandCompute(int vi) {
+    const MandView& v = MAND_VIEWS[vi];
+    for (int r = 0; r < 8; r++) {
+        float im = v.imMax - (r / 7.0f) * (v.imMax - v.imMin);
+        for (int c = 0; c < 8; c++) {
+            float re = v.reMin + (c / 7.0f) * (v.reMax - v.reMin);
+            float zr = 0, zi = 0;
+            uint8_t it = MAND_MAX_ITER;
+            for (int i = 0; i < MAND_MAX_ITER; i++) {
+                float zr2 = zr*zr - zi*zi + re;
+                zi = 2.0f*zr*zi + im;
+                zr = zr2;
+                if (zr*zr + zi*zi > 4.0f) { it = i; break; }
+            }
+            mandIter[r*8+c] = it;
+        }
+    }
+    Serial.printf("Mandelbrot: %s\n", MAND_VIEWS[vi].name);
+}
+
+void resetMandelbrot() { mandCompute(0); }
+
+void runMandelbrot() {
+    static unsigned long lastHueMs   = 0;
+    static unsigned long viewStartMs = 0;
+    static uint8_t  hue    = 0;
+    static int      viewIdx = 0;
+
+    unsigned long now_ms = millis();
+
+    if (now_ms - viewStartMs >= MAND_VIEW_MS) {
+        viewIdx = (viewIdx + 1) % MAND_NUM_VIEWS;
+        viewStartMs = now_ms;
+        mandCompute(viewIdx);
+    }
+
+    if (now_ms - lastHueMs < MAND_HUE_MS) { delay(10); return; }
+    lastHueMs = now_ms;
+    hue += 2;   // slow drift; full rotation every ~7.5 seconds
+
+    FastLED.clear();
+    for (int i = 0; i < 64; i++) {
+        if (mandIter[i] >= MAND_MAX_ITER) {
+            leds[i] = CRGB::Black;             // inside set: off
+        } else {
+            uint8_t h = hue + (uint8_t)(mandIter[i] * 5);
+            leds[i] = CHSV(h, 255, 200);       // boundary: rainbow by escape speed
+        }
+    }
+    FastLED.show();
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 //  BUTTON + SETUP + LOOP
 // ════════════════════════════════════════════════════════════════════════════════
 //
@@ -514,11 +593,12 @@ void runSnake() {
 //    Any mode → advance to next mode
 
 void switchMode() {
-    mode = (mode + 1) % 3;
-    Serial.printf("Mode -> %d (%s)\n", mode,
-        mode == 0 ? "Clock" : mode == 1 ? "Life" : "Snake");
+    mode = (mode + 1) % 4;
+    const char* names[] = {"Clock", "Life", "Snake", "Mandelbrot"};
+    Serial.printf("Mode -> %d (%s)\n", mode, names[mode]);
     if (mode == 1) resetGoL();
     if (mode == 2) resetSnake();
+    if (mode == 3) resetMandelbrot();
     FastLED.clear();
     FastLED.show();
 }
@@ -558,7 +638,7 @@ void checkButton() {
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println("\n=== Cistercian Clock + Life + Snake ===");
+    Serial.println("\n=== Cistercian Clock + Life + Snake + Mandelbrot ===");
     Serial.println("Short press: next mode (or turn snake)");
     Serial.println("Long press:  always next mode");
 
@@ -595,5 +675,6 @@ void loop() {
     checkButton();
     if      (mode == 0) runClock();
     else if (mode == 1) runGoL();
-    else                runSnake();
+    else if (mode == 2) runSnake();
+    else                runMandelbrot();
 }
