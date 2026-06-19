@@ -3,8 +3,8 @@
 #include <FastLED.h>
 
 // ── WiFi ──────────────────────────────────────────────────────────────────────
-const char* ssid     = "Pixel_3392";
-const char* password = "";
+const char* ssid     = "Detonator";
+const char* password = "Emerson03";
 
 // ── NTP ───────────────────────────────────────────────────────────────────────
 const long gmtOffset = -28800;  // UTC-8 (US Pacific Standard)
@@ -200,8 +200,10 @@ void setup() {
     delay(500);
     Serial.println("\n=== Cistercian Clock ===");
 
-    WiFi.persistent(false);
+    WiFi.persistent(true);
     WiFi.mode(WIFI_STA);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
+    WiFi.setAutoReconnect(true);
     WiFi.begin(ssid, password);
     Serial.print("Connecting to WiFi");
     while (WiFi.status() != WL_CONNECTED) {

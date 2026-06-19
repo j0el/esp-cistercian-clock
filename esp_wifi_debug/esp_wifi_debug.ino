@@ -3,6 +3,12 @@
 const char* ssid     = "Detonator";
 const char* password = "Emerson03";
 
+// ── WiFi reliability settings (from ESP8266 community notes) ─────────────────
+// Force STA mode — omitting this causes unstable connections on boot
+// Disable power saving — prevents dropped connections during idle
+// Enable auto-reconnect — recovers from router drops
+// persistent(true) — saves credentials to flash for faster reconnect
+
 void printStatus(int s) {
   switch (s) {
     case WL_IDLE_STATUS:     Serial.println("IDLE");          break;
@@ -46,7 +52,10 @@ void setup() {
   Serial.printf("MAC:       %s\n", WiFi.macAddress().c_str());
   Serial.printf("Target SSID: \"%s\"\n", ssid);
 
+  WiFi.persistent(true);
   WiFi.mode(WIFI_STA);
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  WiFi.setAutoReconnect(true);
   WiFi.disconnect();
   delay(100);
 
