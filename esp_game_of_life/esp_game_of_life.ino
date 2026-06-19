@@ -3,7 +3,7 @@
 #define LED_PIN     2
 #define NUM_LEDS    64
 #define BRIGHTNESS  10
-#define GEN_MS      500     // ms between generations
+#define GEN_MS      1000    // ms between generations
 #define HISTORY_LEN 16      // detect oscillators up to period 16
 #define MAX_GENS    500     // safety reset after N generations
 #define FILL_PCT    35      // % of cells alive on random start
